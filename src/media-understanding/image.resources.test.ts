@@ -282,6 +282,7 @@ it("does not dispatch an image completion retired during transport initializatio
     await fixture.environment(async () => {
       useNoBundledPlugins();
       const lease = await acquireFixtureRuntime(fixture, "image-model");
+      vi.useFakeTimers();
       const dispatch = vi.fn(() => {
         throw new Error("Unexpected retired image provider dispatch");
       });
@@ -310,7 +311,6 @@ it("does not dispatch an image completion retired during transport initializatio
           describeImageWithModelCore({
             ...fixture.request,
             preparedModelRuntime: lease.snapshot,
-            timeoutMs: undefined,
           }),
         ).rejects.toThrow("Prepared plugin registry resources have been released");
         expect(facade).toHaveBeenCalledOnce();
