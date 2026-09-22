@@ -19,7 +19,8 @@ it("drains seeded transcript owners before fresh-process history measurements", 
     { cwd: process.cwd(), encoding: "utf8", timeout: 30_000 },
   );
 
-  expect(result.error).toBeUndefined();
+  const details = `status: ${result.status}\nsignal: ${result.signal}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+  expect(result.error, details).toBeUndefined();
   expect(result.status, result.stderr).toBe(0);
   const report: unknown = JSON.parse(result.stdout);
   expect(report).toEqual(
