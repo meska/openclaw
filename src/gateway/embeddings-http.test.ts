@@ -22,6 +22,10 @@ import type { MemoryEmbeddingProviderAdapter } from "../plugins/memory-embedding
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
+import {
+  createEmbeddingHttpRequest,
+  withEmbeddingProviderCleanup,
+} from "./embeddings-http.cleanup.test-support.js";
 import { startOpenAiCompatGatewayServer } from "./openai-compatible-http.test-helpers.js";
 import {
   installGatewayTestHooks,
@@ -213,18 +217,7 @@ afterAll(async () => {
   vi.resetModules();
 });
 
-async function postEmbeddings(body: unknown, headers?: Record<string, string>) {
-  return await fetch(`http://127.0.0.1:${enabledPort}/v1/embeddings`, {
-    method: "POST",
-    headers: {
-      authorization: "Bearer secret",
-      "content-type": "application/json",
-      ...WRITE_SCOPE_HEADER,
-      ...headers,
-    },
-    body: JSON.stringify(body),
-  });
-}
+const postEmbeddings = createEmbeddingHttpRequest(() => enabledPort);
 
 async function expectDefaultEmbeddingResponse(res: Response) {
   expect(res.status).toBe(200);
@@ -863,30 +856,35 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
     expect(createEmbeddingProviderMock).toHaveBeenCalledTimes(createsBefore + 2);
   });
 
-  it("does not admit a replacement while provider cleanup is pending", async () => {
-    Reflect.set(openAiAdapter, "transport", "local");
-    const { promise: closeGate, resolve: releaseClose } = createDeferred();
-    closeEmbeddingProviderMock.mockImplementationOnce(async () => {
-      await closeGate;
-      throw new Error("close failed");
-    });
-    const createsBefore = createEmbeddingProviderMock.mock.calls.length;
-    const closesBefore = closeEmbeddingProviderMock.mock.calls.length;
-
-    const firstPromise = postEmbeddings({ model: "openclaw/default", input: "first" });
-    await vi.waitFor(() =>
-      expect(closeEmbeddingProviderMock).toHaveBeenCalledTimes(closesBefore + 1),
+  it("does not admit a replacement while provider cleanup is pending", async (context) => {
+    await withEmbeddingProviderCleanup(
+      context,
+      {
+        request: postEmbeddings,
+        drain: drainRetainedOpenAiEmbeddingProviders,
+        adapter: openAiAdapter,
+        server: enabledServer,
+      },
+      async (fixture) => {
+        closeEmbeddingProviderMock.mockImplementationOnce(async () => {
+          await fixture.close();
+          throw new Error("close failed");
+        });
+        const createsBefore = createEmbeddingProviderMock.mock.calls.length;
+        const closesBefore = closeEmbeddingProviderMock.mock.calls.length;
+        const firstPromise = fixture.request({ model: "openclaw/default", input: "first" });
+        await fixture.waitForClose(firstPromise);
+        expect(closeEmbeddingProviderMock).toHaveBeenCalledTimes(closesBefore + 1);
+        const secondPromise = fixture.request({ model: "openclaw/default", input: "second" });
+        await Promise.resolve();
+        expect(createEmbeddingProviderMock).toHaveBeenCalledTimes(createsBefore + 1);
+        fixture.releaseClose();
+        const [first, second] = await Promise.all([firstPromise, secondPromise]);
+        expect(first.status).toBe(200);
+        expect(second.status).toBe(200);
+        expect(createEmbeddingProviderMock).toHaveBeenCalledTimes(createsBefore + 2);
+      },
     );
-    const secondPromise = postEmbeddings({ model: "openclaw/default", input: "second" });
-    await Promise.resolve();
-    expect(createEmbeddingProviderMock).toHaveBeenCalledTimes(createsBefore + 1);
-
-    releaseClose();
-    const [first, second] = await Promise.all([firstPromise, secondPromise]);
-    Reflect.set(openAiAdapter, "transport", "remote");
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
-    expect(createEmbeddingProviderMock).toHaveBeenCalledTimes(createsBefore + 2);
   });
 
   it("does not create a provider for a disconnected request waiting behind cleanup", async () => {
