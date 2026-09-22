@@ -314,8 +314,8 @@ export class CompilerInputSnapshot {
         const file = path.join(directory, entry.name);
         const canonicalFile = path.join(realDirectory, entry.name);
         const id = portableRelativePath(rootDir, file);
-        const add = (name: string, file?: string) =>
-          names.push({ id, name, directory: realDirectory, file });
+        const add = (name: string, contentFile?: string) =>
+          names.push({ id, name, directory: realDirectory, file: contentFile });
         if (skipNamespaceEntry(id, entry.name, installed)) {
           continue;
         }
