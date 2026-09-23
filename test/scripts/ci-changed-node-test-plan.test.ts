@@ -43,6 +43,7 @@ import {
   hasImportGraphImpactOnTargets,
   resolveChangedTestTargetPlan,
 } from "../../scripts/test-projects.test-support.mts";
+import * as testProjects from "../../scripts/test-projects.test-support.mts";
 import { listGitTrackedFiles } from "../../src/test-utils/repo-files.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import {
@@ -2372,6 +2373,11 @@ describe("CI changed Node test plan", () => {
     for (const owner of uiOwners) {
       expect(shards).toContainEqual({
         ...owner,
+        groups: owner.groups.filter((group) =>
+          group.configs.some((config) =>
+            /^test\/vitest\/vitest\.ui(?:-isolated|-timing)?\.config\.ts$/u.test(config),
+          ),
+        ),
         configs: [],
         checkName: `checks-node-changed-ui-${owner.shardName}`,
         shardName: `changed-ui-${owner.shardName}`,
@@ -2389,6 +2395,10 @@ describe("CI changed Node test plan", () => {
       "src/agents/live-model-filter.test.ts",
       "test/ui.presenter-next-run.test.ts",
       "test/talk-browser-defaults.test.ts",
+      "test/vitest-ui-package-config.test.ts",
+      "src/audit/execution-decision-facts.test.ts",
+      "src/auto-reply/reply/commands-export-session.test.ts",
+      "src/gateway/server-methods/session-change-event.fallback.test.ts",
     ]) {
       const consumerConfig = buildVitestRunPlans([consumer])[0]!.config;
       expect(
@@ -2402,6 +2412,22 @@ describe("CI changed Node test plan", () => {
         consumer,
       ).toBe(true);
     }
+    const toolingFiles = selectedGroups
+      .filter((group) => group.configs.includes("test/vitest/vitest.tooling.config.ts"))
+      .flatMap((group) => group.includePatterns ?? []);
+    for (const unrelated of [
+      "test/scripts/pr-worktree-provision.test.ts",
+      "test/scripts/pr-merge-recovery.test.ts",
+      "test/scripts/mobile-release-authority.test.ts",
+    ]) {
+      expect(toolingFiles, unrelated).not.toContain(unrelated);
+    }
+    expect(
+      selectedGroups
+        .filter((group) => group.requiresDist)
+        .map((group) => group.shard_name)
+        .toSorted(),
+    ).toEqual(["core-runtime-tui-pty", "core-support-boundary"]);
     expect(createChangedNodeTestShards(paths)).toBeNull();
     expect(createChangedNodeTestShards([paths[1]!, "ui/src/AGENTS.md"], options)).toEqual(
       createChangedNodeTestShards([paths[1]!], options),
@@ -2411,6 +2437,33 @@ describe("CI changed Node test plan", () => {
       createChangedNodeTestShards([...paths, "package.json"], { ...options, onFallback }),
     ).toBeNull();
     expect(onFallback).toHaveBeenCalledWith("tooling owner change requires full-family coverage");
+
+    const consumers = testProjects.resolveControlUiTestConsumers([paths[0]!]);
+    for (const missing of [
+      "test/scripts/missing-ui-consumer.test.ts",
+      "test/scripts/missing-ui-consumer.e2e.test.ts",
+    ]) {
+      const unresolvedConsumer = vi
+        .spyOn(testProjects, "resolveControlUiTestConsumers")
+        .mockReturnValue([...consumers, missing]);
+      try {
+        expect(createChangedNodeTestShards(paths, options), missing).toBeNull();
+      } finally {
+        unresolvedConsumer.mockRestore();
+      }
+    }
+    const resolvePlans = testProjects.buildVitestRunPlans;
+    const missingOwner = vi
+      .spyOn(testProjects, "buildVitestRunPlans")
+      .mockImplementation((targets, cwd) =>
+        targets.includes("test/vitest-ui-package-config.test.ts") ? [] : resolvePlans(targets, cwd),
+      );
+    try {
+      expect(createChangedNodeTestShards(paths, { ...options, onFallback })).toBeNull();
+      expect(onFallback).toHaveBeenCalledWith("unresolved UI host consumer");
+    } finally {
+      missingOwner.mockRestore();
+    }
   });
 
   it("chunks many targets into bounded parallel jobs", () => {

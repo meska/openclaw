@@ -263,7 +263,7 @@ function logSlowTransactionStep(params: {
   if (params.elapsedMs < slowBusyWaitThresholdMs(params.options)) {
     return;
   }
-  transactionLogger(params.options).warn("slow SQLite transaction lock wait", {
+  transactionLogger(params.options).warn("slow SQLite transaction step", {
     async: false,
     ...(params.options?.busyTimeoutMs !== undefined
       ? { busyTimeoutMs: params.options.busyTimeoutMs }

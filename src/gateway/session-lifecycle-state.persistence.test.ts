@@ -525,7 +525,7 @@ it.each([
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const writerStarted = createDeferred();
     const releaseWriter = createDeferred();
-    const ownerClearRequested = createDeferred<string>();
+    const clearRequested = createDeferred<string>();
     let claimId: string | undefined;
     let subscriptions: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
     let heldWriter: Promise<unknown> | undefined;
@@ -556,7 +556,7 @@ it.each([
           exclusive: true,
           ownsContext: true,
           trackOwner: true,
-          onClearRequested: ownerClearRequested.resolve,
+          onClearRequested: clearRequested.resolve,
         },
       );
       if (!claimId) {
@@ -609,8 +609,8 @@ it.each([
       );
       releaseWriter.resolve();
       await heldWriter;
-      // Failure receipts can outlive row visibility; wait for the owning persistence to settle.
-      expect(await ownerClearRequested.promise).toBe(terminalClaimId);
+      // Failed runs also persist a transcript receipt after the row update.
+      expect(await clearRequested.promise).toBe(terminalClaimId);
       expect(persistenceTestWarnings).not.toHaveBeenCalled();
       expect(loadSessionEntry(target)?.status).toBe(status);
       expect(getAgentRunContextOwnerStatus(runId, terminalClaimId, lifecycleGeneration)).toBe(
