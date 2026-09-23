@@ -23,6 +23,7 @@ import {
   trackAsyncWork,
 } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { onTaskRegistryChange } from "../../tasks/task-registry.store.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { closePreparedModelRuntimeSnapshots } from "../prepared-model-runtime.lifecycle.js";
 import { SessionManager } from "../sessions/session-manager.js";
@@ -309,6 +310,18 @@ it.each([
       const caller = new AbortController();
       const callerReason = new Error("foreground compaction caller cancelled");
       let pending: Promise<unknown> | undefined;
+      const taskSucceeded = createDeferredCore();
+      const stopTaskObserver = deferred
+        ? onTaskRegistryChange((event) => {
+            if (
+              event?.kind === "upserted" &&
+              event.task.requesterSessionKey === target.sessionKey &&
+              event.task.status === "succeeded"
+            ) {
+              taskSucceeded.resolve();
+            }
+          })
+        : undefined;
       try {
         expect(getAsyncWorkSignal()).toBeUndefined();
         const start = () =>
@@ -380,6 +393,15 @@ it.each([
         if (factory === "none") {
           await Promise.allSettled(work.slice(0, 1));
         }
+        if (deferred) {
+          // Durable task settlement precedes disposal and has its own deadline.
+          // Keep the disposal guard focused on factory-service deadlocks.
+          await withTestTimeout(
+            taskSucceeded.promise,
+            5_000,
+            "Deferred maintenance task never completed",
+          );
+        }
         await withTestTimeout(
           disposalEntered.promise,
           1_000,
@@ -417,6 +439,7 @@ it.each([
           reopened.close();
         }
       } finally {
+        stopTaskObserver?.();
         resume.resolve();
         finishDisposal.resolve();
         stopFactory.resolve();
