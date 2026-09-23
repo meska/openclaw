@@ -10,7 +10,7 @@ import {
   resetSystemEventsForTest,
 } from "openclaw/plugin-sdk/system-event-runtime";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFailed, vi } from "vitest";
 import { runWithTelegramSpooledReplayUpdate } from "./bot-processing-outcome.js";
 import {
   createBot,
@@ -828,10 +828,35 @@ describe("createTelegramBot typed command pipeline", () => {
   );
 
   it("commits a first sticker description before model admission and never describes a supplemental image as that sticker", async () => {
+    const startedAt = Date.now();
+    let activeUpdateId: number | undefined;
+    const phases: Array<{ updateId: number | undefined; phase: string; at: number }> = [];
+    const recordPhase = (phase: string) => {
+      phases.push({ updateId: activeUpdateId, phase, at: Date.now() });
+    };
+    onTestFailed(() => {
+      console.error(
+        "Sticker fixture phases",
+        JSON.stringify(
+          [...harness.updatePhases, ...phases]
+            .sort((a, b) => a.at - b.at)
+            .map(({ at, ...phase }) => ({ ...phase, elapsedMs: at - startedAt })),
+        ),
+      );
+    });
     const describeStarted = createDeferred<void>();
     const description = createDeferred<{ text: string }>();
+    let descriptionReleased = false;
+    const releaseDescription = () => {
+      if (!descriptionReleased) {
+        descriptionReleased = true;
+        recordPhase("description-released");
+        description.resolve({ text: "A curious sticker" });
+      }
+    };
     const runtime = getTelegramRuntime();
     const describeImage = vi.fn(async () => {
+      recordPhase("description-started");
       describeStarted.resolve();
       return description.promise;
     });
@@ -894,6 +919,7 @@ describe("createTelegramBot typed command pipeline", () => {
     };
     const cachedAtAdmission: Array<Awaited<ReturnType<typeof getCachedSticker>>> = [];
     harness.replySpy.mockImplementation(async () => {
+      recordPhase("model-admitted");
       cachedAtAdmission.push(await getCachedSticker(sticker.file_unique_id));
       return { text: "Sticker received" };
     });
@@ -901,6 +927,7 @@ describe("createTelegramBot typed command pipeline", () => {
       const bot = createBot(false, true, cfg);
       const webhook = webhookCallback(bot, "std/http");
       const receive = async (update: Parameters<typeof bot.handleUpdate>[0]) => {
+        activeUpdateId = update.update_id;
         // grammY requires undefined at the reply leaf; Telegram JSON omits it.
         const response = await webhook(
           new Request("http://localhost/telegram", {
@@ -919,7 +946,7 @@ describe("createTelegramBot typed command pipeline", () => {
         }),
       ]);
       expect(harness.replySpy).not.toHaveBeenCalled();
-      description.resolve({ text: "A curious sticker" });
+      releaseDescription();
       await receiving;
       await receive({
         update_id: 2801,
@@ -972,7 +999,8 @@ describe("createTelegramBot typed command pipeline", () => {
       expect(describeImage).toHaveBeenCalledOnce();
       expect(apiCalls.mock.calls.filter(([method]) => method === "sendMessage")).toHaveLength(3);
     } finally {
-      description.resolve({ text: "A curious sticker" });
+      releaseDescription();
+      await harness.drainUpdates();
       setTelegramRuntime(runtime);
     }
   });

@@ -553,7 +553,10 @@ describe("Telegram preview and presentation delivery through HTTP", () => {
       expect(reachedModel).toBe(true);
       expect(visibleBeforeFailure).toEqual(accepted ? [partial] : []);
       const visible = [...visibleMessages.values()];
-      expect(visible, JSON.stringify({ calls, acceptedCalls })).toHaveLength(1);
+      expect(
+        visible,
+        JSON.stringify({ calls, acceptedCalls, dispatchReceipt: http.dispatchReceipt }),
+      ).toHaveLength(1);
       expect(visible[0]).toContain("Please try again");
       if (accepted) {
         expect(visible[0]).toContain(partial);

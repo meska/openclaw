@@ -340,7 +340,8 @@ describe("gateway WebSocket chat abort ownership", () => {
 
   test("does not let a late abort replace an established dispatch error", async () => {
     const sessionDirectory = temporaryDirectories.make("openclaw-chat-error-late-abort-");
-    testState.sessionStorePath = path.join(sessionDirectory, "sessions.json");
+    const storePath = path.join(sessionDirectory, "sessions.json");
+    testState.sessionStorePath = storePath;
     await writeSessionStore({
       entries: {
         main: {
@@ -350,14 +351,21 @@ describe("gateway WebSocket chat abort ownership", () => {
       },
     });
 
+    const connectionOffset = connectionReleases.length;
     const socket = await gateway.openWs();
+    const connectionRelease = connectionReleases[connectionOffset];
+    const dispatchEntered = createDeferred();
     const dispatchRelease = createDeferred();
     const runId = "real-websocket-dispatch-error-before-late-abort";
     const terminalStates = trackChatTerminalStates(socket, runId);
+    let admissionRelease: Promise<void> | undefined;
 
     try {
+      expect(connectionReleases).toHaveLength(connectionOffset + 1);
+      expect(connectionRelease).toBeDefined();
       await connectOk(socket);
       dispatchInboundMessageMock.mockImplementationOnce(async () => {
+        dispatchEntered.resolve();
         await dispatchRelease.promise;
         throw new Error("dispatch rejected before a late abort");
       });
@@ -370,24 +378,23 @@ describe("gateway WebSocket chat abort ownership", () => {
       const started = await rpcReq(socket, "chat.send", sendParameters);
       expect(started.ok).toBe(true);
       expect(started.payload).toMatchObject({ runId, status: "started" });
-      await vi.waitFor(() => expect(dispatchInboundMessageMock).toHaveBeenCalledOnce(), {
-        interval: 10,
-        timeout: 2_000,
+      await dispatchEntered.promise;
+      expect(dispatchInboundMessageMock).toHaveBeenCalledOnce();
+      admissionRelease = getSessionWorkAdmissionRelease({
+        scope: storePath,
+        identities: ["main", "agent:main:main", "sess-main"],
       });
-
-      const errorFrame = onceMessage(
-        socket,
-        (frame) =>
-          frame.type === "event" &&
-          frame.event === "chat" &&
-          frame.payload?.runId === runId &&
-          frame.payload?.state === "error",
-        2_000,
-      );
+      expect(admissionRelease).toBeDefined();
+      if (!admissionRelease) {
+        throw new Error("Dispatched work must retain its session admission");
+      }
       dispatchRelease.resolve();
-      await expect(errorFrame).resolves.toMatchObject({
-        payload: { runId, state: "error" },
-      });
+      // Failure publication follows durable terminal persistence. Join its owner,
+      // then fence this socket before proving that the later abort is a no-op.
+      await admissionRelease;
+      const barrier = await rpcReq(socket, "chat.history", { sessionKey: "main" });
+      expect(barrier.ok).toBe(true);
+      expect(terminalStates).toEqual(["error"]);
 
       const lateAbort = await rpcReq(socket, "chat.abort", {
         sessionKey: "main",
@@ -401,8 +408,14 @@ describe("gateway WebSocket chat abort ownership", () => {
       expect(replay.payload).toMatchObject({ runId, status: "error" });
       expect(terminalStates).toEqual(["error"]);
     } finally {
+      admissionRelease ??= getSessionWorkAdmissionRelease({
+        scope: storePath,
+        identities: ["main", "agent:main:main", "sess-main"],
+      });
       dispatchRelease.resolve();
+      await admissionRelease;
       socket.close();
+      await connectionRelease;
     }
   });
 
