@@ -328,20 +328,13 @@ describe("Activity recap lifecycle with the canonical session store", () => {
         totalMessages: 1,
       });
 
-      // A model response precedes its SQLite commit and projection publication.
-      // Join the owner's current-state notification before reading the resident row.
-      const published = createDeferred();
-      changed.mockImplementation((changedTarget: typeof target) => {
-        if (
-          changedTarget.key === target.key &&
-          changedTarget.agentId === target.agentId &&
-          view()?.state === "current"
-        ) {
-          published.resolve();
-        }
-      });
+      const published = createDeferred<ReturnType<typeof view>>();
+      changed.mockImplementationOnce(() => published.resolve(view()));
       completion.resolve(result("Completed the first turn."));
-      await published.promise;
+      expect(await published.promise).toMatchObject({
+        state: "current",
+        text: "Completed the first turn.",
+      });
       expect(await describeSession()).toMatchObject({
         session: {
           key: target.key,
