@@ -10,7 +10,6 @@ import {
 } from "../../state/openclaw-state-db-cache.js";
 import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-readonly.js";
 import type { OpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import { isOpenClawStateWriteContentionError } from "../../state/openclaw-state-ownership.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import {
@@ -71,13 +70,9 @@ function isCommitAdmission(value: unknown): value is WorkerEnvironmentCommitAdmi
 }
 
 registerOpenClawStateDatabaseLifecycleListener((event) => {
-  // A refused native open does not revoke independently active worker admission.
-  // Keep the resident inventory through transient locks; explicit retirement and
-  // terminal failures still invalidate it before any subsequent read or mutation.
-  if (event.kind === "open-error" && isOpenClawStateWriteContentionError(event.error)) {
-    return;
-  }
-  if (event.kind !== "opened") {
+  // A refused native open does not retire an admitted worker inventory.
+  // Explicit closure and terminal failures still revoke its owner.
+  if (event.kind !== "opened" && event.kind !== "open-error") {
     workerEnvironmentProjections.invalidate(event.identity, event.path);
   }
 });
