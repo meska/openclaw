@@ -44,11 +44,6 @@ const replySpy = vi.fn<ReplyResolver>();
 const buildModelsProviderData = vi.fn(defaultTelegramBotDeps.buildModelsProviderData);
 const listSkillCommandsForAgents = vi.fn(defaultTelegramBotDeps.listSkillCommandsForAgents);
 const pendingUpdates = new Set<Promise<void>>();
-const updatePhases: Array<{
-  updateId: number | null;
-  phase: "update-start" | "update-settled" | "teardown-start";
-  at: number;
-}> = [];
 
 async function drainUpdates() {
   for (const { abort } of bots) {
@@ -64,8 +59,6 @@ export const harness = {
     return state;
   },
   replySpy,
-  updatePhases,
-  drainUpdates,
   listSkillCommandsForAgents,
   telegramBotDepsForTest: {
     ...defaultTelegramBotDeps,
@@ -157,13 +150,10 @@ export function createBot(
   });
   const handleUpdate = bot.handleUpdate.bind(bot);
   vi.spyOn(bot, "handleUpdate").mockImplementation((...args) => {
-    const updateId = args[0].update_id;
-    updatePhases.push({ updateId, phase: "update-start", at: Date.now() });
     const update = handleUpdate(...args);
     pendingUpdates.add(update);
     const settled = () => {
       pendingUpdates.delete(update);
-      updatePhases.push({ updateId, phase: "update-settled", at: Date.now() });
     };
     void update.then(settled, settled);
     return update;
@@ -212,7 +202,6 @@ beforeEach(async () => {
     createTestRegistry([{ pluginId: "telegram", plugin: telegramPlugin, source: "test" }]),
   );
   apiCalls.mockReset();
-  updatePhases.length = 0;
   apiResponses.clear();
   syntheticTokens.clear();
   http.responseFor = (method, fields) => {
@@ -250,7 +239,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  updatePhases.push({ updateId: null, phase: "teardown-start", at: Date.now() });
   // A webhook deadline does not stop handleUpdate; keep its runtime and DB alive until it settles.
   await drainUpdates();
   const ownedBots = bots.splice(0);
