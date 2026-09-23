@@ -248,7 +248,6 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
       expect(
         await rpcReq(owner.ws, "sessions.abort", { key: run.sessionKey, runId: run.runId }),
       ).toMatchObject({ ok: true, payload: { status: "aborted", abortedRunId: run.runId } });
-      // The abort response precedes asynchronous publication; join it before the socket barrier.
       await flushPendingSessionsChangedEvents();
       expect(await rpcReq(owner.ws, "sessions.subscribe", {})).toMatchObject({
         ok: true,
