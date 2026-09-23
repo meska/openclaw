@@ -7,6 +7,10 @@ import * as sqlite from "../../infra/kysely-sync.js";
 import * as nodeSqlite from "../../infra/node-sqlite.js";
 import { createStateSchemaMigrationStep } from "../../infra/state-migrations.state-schema.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import {
+  clearOpenClawDatabaseQuarantine,
+  recordOpenClawDatabaseQuarantine,
+} from "../../state/openclaw-quarantine-store.js";
 import * as stateReads from "../../state/openclaw-state-db-readonly.js";
 import { withExistingOpenClawStateSchema } from "../../state/openclaw-state-db-schema-policy.js";
 import {
@@ -14,8 +18,12 @@ import {
   closeOpenClawStateDatabaseForTest,
   closeOpenClawStateDatabaseByPathAsync,
   openOpenClawStateDatabase,
+  recordOpenClawStateDatabaseOpenFailure,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { claimOpenClawStateOwnership } from "../../state/openclaw-state-ownership-operations.js";
+import { OpenClawStateExternalOwnershipError } from "../../state/openclaw-state-ownership.js";
+import { withEnvAsync } from "../../test-utils/env.js";
 import { publishWorkerEnvironmentNativeMutation } from "./store-native-publication.js";
 import { createWorkerEnvironmentStore } from "./store.js";
 
@@ -222,6 +230,100 @@ it("shares committed inventory and native pairing publications across database a
   expect(store.get(intent.environmentId)?.nodeDeviceId).toBe("alias-device");
   await closeOpenClawStateDatabaseByPathAsync(aliasPath);
   expect(() => store.get(intent.environmentId)).toThrow();
+});
+
+it("preserves admitted inventory after a refused native open but fences terminal failure", async () => {
+  const stateDir = tempDirs.make("worker-inventory-open-error-");
+  await withEnvAsync(
+    { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_SUPERVISOR_MODE: "external" },
+    async () => {
+      claimOpenClawStateOwnership("gateway-supervisor");
+      const databasePath = openOpenClawStateDatabase().path;
+      // The refused caller must take fresh admission, not the native handle cache.
+      await closeOpenClawStateDatabaseByPathAsync(databasePath);
+      const store = await createWorkerEnvironmentStore();
+      try {
+        const intent = await store.createIntent({
+          environmentId: "admitted-environment",
+          providerId: "provider",
+          profileId: "profile",
+          profileSnapshot: { settings: {} },
+          provisionOperationId: "admitted-provision",
+        });
+        expect(() =>
+          openOpenClawStateDatabase({
+            path: databasePath,
+            env: { OPENCLAW_STATE_DIR: stateDir },
+          }),
+        ).toThrow(OpenClawStateExternalOwnershipError);
+        expect(store.get(intent.environmentId)).toEqual(intent);
+        const changed = await store.transition({
+          environmentId: intent.environmentId,
+          from: "requested",
+          to: "provisioning",
+        });
+        expect(changed.state).toBe("provisioning");
+        expect(store.get(intent.environmentId)).toEqual(changed);
+
+        recordOpenClawStateDatabaseOpenFailure(
+          databasePath,
+          new Error("database disk image is malformed"),
+        );
+        expect(() => store.get(intent.environmentId)).toThrow("inventory has closed");
+        expect(() =>
+          store.transition({
+            environmentId: intent.environmentId,
+            from: "provisioning",
+            to: "failed",
+          }),
+        ).toThrow("inventory has closed");
+      } finally {
+        await store.close();
+      }
+    },
+  );
+});
+
+it("retires inventory when native admission discovers durable quarantine", async () => {
+  const stateDir = tempDirs.make("worker-inventory-quarantine-");
+  await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+    const databasePath = openOpenClawStateDatabase().path;
+    await closeOpenClawStateDatabaseByPathAsync(databasePath);
+    const store = await createWorkerEnvironmentStore();
+    let intent: Awaited<ReturnType<typeof store.createIntent>>;
+    try {
+      intent = await store.createIntent({
+        environmentId: "quarantined-environment",
+        providerId: "provider",
+        profileId: "profile",
+        profileSnapshot: { settings: {} },
+        provisionOperationId: "quarantined-provision",
+      });
+      // A different verifier can publish this fact without notifying our process.
+      expect(
+        recordOpenClawDatabaseQuarantine({
+          kind: "state",
+          path: databasePath,
+          reason: "verified corrupt index",
+        }),
+      ).toBe(true);
+      expect(() => openOpenClawStateDatabase()).toThrow(
+        expect.objectContaining({ name: "SqliteIntegrityError" }),
+      );
+      expect(() => store.get(intent.environmentId)).toThrow("inventory has closed");
+    } finally {
+      await store.close();
+    }
+
+    // Clearing the durable fact must not leave an unrelated process-local latch.
+    expect(clearOpenClawDatabaseQuarantine(databasePath)).toBe(true);
+    const reopened = await createWorkerEnvironmentStore();
+    try {
+      expect(reopened.get(intent.environmentId)).toEqual(intent);
+    } finally {
+      await reopened.close();
+    }
+  });
 });
 
 it("serves committed inventory and performs guarded mutations without host SQLite", async () => {
