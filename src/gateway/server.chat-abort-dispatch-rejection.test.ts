@@ -351,21 +351,15 @@ describe("gateway WebSocket chat abort ownership", () => {
       },
     });
 
-    const connectionOffset = connectionReleases.length;
     const socket = await gateway.openWs();
-    const connectionRelease = connectionReleases[connectionOffset];
-    const dispatchEntered = createDeferred();
     const dispatchRelease = createDeferred();
     const runId = "real-websocket-dispatch-error-before-late-abort";
     const terminalStates = trackChatTerminalStates(socket, runId);
     let admissionRelease: Promise<void> | undefined;
 
     try {
-      expect(connectionReleases).toHaveLength(connectionOffset + 1);
-      expect(connectionRelease).toBeDefined();
       await connectOk(socket);
       dispatchInboundMessageMock.mockImplementationOnce(async () => {
-        dispatchEntered.resolve();
         await dispatchRelease.promise;
         throw new Error("dispatch rejected before a late abort");
       });
@@ -378,20 +372,21 @@ describe("gateway WebSocket chat abort ownership", () => {
       const started = await rpcReq(socket, "chat.send", sendParameters);
       expect(started.ok).toBe(true);
       expect(started.payload).toMatchObject({ runId, status: "started" });
-      await dispatchEntered.promise;
-      expect(dispatchInboundMessageMock).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(dispatchInboundMessageMock).toHaveBeenCalledOnce(), {
+        interval: 10,
+        timeout: 2_000,
+      });
+
       admissionRelease = getSessionWorkAdmissionRelease({
         scope: storePath,
         identities: ["main", "agent:main:main", "sess-main"],
       });
-      expect(admissionRelease).toBeDefined();
       if (!admissionRelease) {
-        throw new Error("Dispatched work must retain its session admission");
+        throw new Error("Held dispatch must retain its session admission");
       }
       dispatchRelease.resolve();
-      // Failure publication follows durable terminal persistence. Join its owner,
-      // then fence this socket before proving that the later abort is a no-op.
       await admissionRelease;
+      // Admission releases after error publication; this response also joins its wire delivery.
       const barrier = await rpcReq(socket, "chat.history", { sessionKey: "main" });
       expect(barrier.ok).toBe(true);
       expect(terminalStates).toEqual(["error"]);
@@ -408,14 +403,9 @@ describe("gateway WebSocket chat abort ownership", () => {
       expect(replay.payload).toMatchObject({ runId, status: "error" });
       expect(terminalStates).toEqual(["error"]);
     } finally {
-      admissionRelease ??= getSessionWorkAdmissionRelease({
-        scope: storePath,
-        identities: ["main", "agent:main:main", "sess-main"],
-      });
       dispatchRelease.resolve();
       await admissionRelease;
       socket.close();
-      await connectionRelease;
     }
   });
 

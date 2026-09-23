@@ -212,8 +212,8 @@ describe("Telegram preview and presentation delivery through HTTP", () => {
         for (let interval = 0; interval < 17; interval += 1) {
           const previousCount = acceptedTypingAt.length;
           await vi.advanceTimersByTimeAsync(4_000);
-          await expect.poll(() => acceptedTypingAt.length).toBeGreaterThan(previousCount);
           await http.waitForTypingSend();
+          expect(acceptedTypingAt.length).toBeGreaterThan(previousCount);
           await vi.advanceTimersByTimeAsync(0);
         }
         expect(acceptedTypingAt.at(-1)! - acceptedTypingAt[0]!).toBeGreaterThan(60_000);
@@ -553,10 +553,7 @@ describe("Telegram preview and presentation delivery through HTTP", () => {
       expect(reachedModel).toBe(true);
       expect(visibleBeforeFailure).toEqual(accepted ? [partial] : []);
       const visible = [...visibleMessages.values()];
-      expect(
-        visible,
-        JSON.stringify({ calls, acceptedCalls, dispatchReceipt: http.dispatchReceipt }),
-      ).toHaveLength(1);
+      expect(visible, JSON.stringify({ calls, acceptedCalls })).toHaveLength(1);
       expect(visible[0]).toContain("Please try again");
       if (accepted) {
         expect(visible[0]).toContain(partial);

@@ -3,7 +3,6 @@ import type { AddressInfo, Socket } from "node:net";
 import { AbortController as TelegramAbortController } from "abort-controller";
 import { Bot } from "grammy";
 import { projectAgentToolActivity } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { readAgentRunTerminalOutcome } from "openclaw/plugin-sdk/channel-inbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   registerSessionBindingAdapter,
@@ -39,28 +38,6 @@ export type ReplyResolverOptions = Parameters<ReplyResolver>[1];
 const BOT_TOKEN = "123456:telegram-progress-http-fixture";
 const CHAT_ID = 123;
 
-function snapshotDispatchResult(
-  result: Awaited<ReturnType<typeof dispatchInboundMessage>>,
-  clockSkewMs: { before: number; after: number },
-) {
-  return {
-    queuedFinal: result.queuedFinal,
-    counts: result.counts,
-    failedCounts: result.failedCounts,
-    settledReceipt: result.settledReceipt,
-    observedReplyDelivery: result.observedReplyDelivery,
-    deferredToActiveRun: result.deferredToActiveRun,
-    noVisibleReplyFallbackEligible: result.noVisibleReplyFallbackEligible,
-    noVisibleReplyFallbackDelivered: result.noVisibleReplyFallbackDelivered,
-    deliberateSilentTerminalReply: result.deliberateSilentTerminalReply,
-    beforeAgentRunBlocked: result.beforeAgentRunBlocked,
-    sendPolicyDenied: result.sendPolicyDenied,
-    sourceReplyDeliveryMode: result.sourceReplyDeliveryMode,
-    terminalOutcome: readAgentRunTerminalOutcome(result),
-    clockSkewMs,
-  };
-}
-
 export function createTelegramDispatchHttpFixture() {
   let server: Server;
   let apiRoot: string;
@@ -76,7 +53,6 @@ export function createTelegramDispatchHttpFixture() {
   const botApiCallWaiters = new Set<(call: RecordedBotApiCall) => void>();
   const pendingDeletes: Promise<unknown>[] = [];
   let typingSend: Promise<void> = Promise.resolve();
-  let dispatchReceipt: ReturnType<typeof snapshotDispatchResult> | undefined;
   let lifetime: AbortController;
   let stopped: Promise<never>;
   let stop: (error: Error) => void;
@@ -130,6 +106,8 @@ export function createTelegramDispatchHttpFixture() {
           await Promise.race([held.release.promise, stopped]);
         }
         response.setHeader("content-type", "application/json");
+        // Idle keep-alive expiry must not race later fixture requests under load.
+        response.setHeader("connection", "close");
         const rejection = await Promise.race([
           Promise.resolve(respondToCall?.({ method, fields })),
           stopped,
@@ -282,7 +260,6 @@ export function createTelegramDispatchHttpFixture() {
     visibleMessages.clear();
     visibleMarkup.clear();
     acceptedCalls.length = 0;
-    dispatchReceipt = undefined;
     respondToCall = undefined;
     resetPluginRuntimeStateForTest();
     setActivePluginRegistry(
@@ -547,8 +524,7 @@ export function createTelegramDispatchHttpFixture() {
           token: BOT_TOKEN,
           dispatchReplyFromConfig: async (params) => {
             channelOptions = params.replyOptions;
-            const clockSkewBefore = Date.now() - vi.getRealSystemTime();
-            const result = await dispatchInboundMessage({
+            return await dispatchInboundMessage({
               ctx: params.ctx,
               cfg: params.cfg,
               dispatcher: params.dispatcher,
@@ -562,12 +538,6 @@ export function createTelegramDispatchHttpFixture() {
               replyResolver,
               dispatchReplyFromConfig: scenario?.producer,
             });
-            // Retain only delivery facts; logging during dispatch can change the timing under test.
-            dispatchReceipt = snapshotDispatchResult(result, {
-              before: clockSkewBefore,
-              after: Date.now() - vi.getRealSystemTime(),
-            });
-            return result;
           },
         },
       });
@@ -607,9 +577,6 @@ export function createTelegramDispatchHttpFixture() {
     visibleMessages,
     visibleMarkup,
     acceptedCalls,
-    get dispatchReceipt() {
-      return dispatchReceipt;
-    },
     createContext,
     emitToolStart,
     dispatchProgressTurn,
