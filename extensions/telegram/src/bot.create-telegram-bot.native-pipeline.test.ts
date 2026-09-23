@@ -839,8 +839,8 @@ describe("createTelegramBot typed command pipeline", () => {
         "Sticker fixture phases",
         JSON.stringify(
           [...harness.updatePhases, ...phases]
-            .sort((a, b) => a.at - b.at)
-            .map(({ at, ...phase }) => ({ ...phase, elapsedMs: at - startedAt })),
+            .toSorted((a, b) => a.at - b.at)
+            .map(({ at, updateId, phase }) => ({ updateId, phase, elapsedMs: at - startedAt })),
         ),
       );
     });
