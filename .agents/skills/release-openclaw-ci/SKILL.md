@@ -40,9 +40,26 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   instead of healing broader main.
 - Validate provider secrets before dispatching expensive full release matrices.
 - Linux (`ubuntu`) cross-OS lanes gate publication for beta, stable, and full.
-  Windows/macOS cross-OS lanes run in parallel as advisory coverage. Record
-  their actual pass/fail conclusions; failures do not block Release Decision,
-  npm publication, or `pnpm release:candidate`. Keep normal CI, npm
+  Windows/macOS cross-OS lanes, the CI child's `checks-windows-node-test-*`
+  shards, and its `macos-swift (...)` app lanes run in parallel as advisory
+  coverage. Record their actual pass/fail conclusions (`advisoryJobs` in the
+  manifest, `::warning::` naming the lane in Release Decision); failures do not
+  block Release Decision, npm publication, the publish preflight, or
+  `pnpm release:candidate`. Fix them in parallel; never hold npm for them.
+- Release priority: release runs always beat PR-side hosted-runner work. The
+  repo variable `OPENCLAW_RELEASE_PRIORITY_RUN` names the active FRV parent;
+  `pnpm ci:full-release` records the pause window, sets it on dispatch, and
+  clears it when the operation ends; `pnpm frv continue --failed` and
+  `pnpm frv verify` clear it on seal. While set, `CI`, Auto response, PR
+  context and evidence, Labeler, CodeQL, Periphery, Workflow Sanity,
+  ClawSweeper Dispatch, and Maintainer Command Reactions skip at the job level
+  unless dispatched or on a `release*/` branch (Security Review never pauses);
+  deferred CI fails its gate with `Deferred for release <run>`. When release
+  children starve behind queued PR runs, `pnpm frv prioritize --run <parent>`
+  records and cancels the still-queued non-release runs of those workflows;
+  after the seal, `pnpm frv prioritize --restore <record>` clears the variable
+  first and reruns the cancelled and deferred runs, newest per workflow and
+  branch. Never leave the variable set after a release. Keep normal CI, npm
   qualification, Docker, Package Acceptance, performance, and soak gates intact.
 - macOS app signing/notarization/appcast and Windows Hub asset promotion run
   in parallel with or after npm publication and never delay npm or GitHub
@@ -463,6 +480,10 @@ publish workflow reads the effective profile from the full-validation manifest.
 Stable publication requires soak unless the operator supplies `stable_soak_waiver`
 with a reason; the publisher forwards and records that reason in release evidence
 without changing validation coverage or other publication gates.
+An operator lane waiver (repository variable `OPENCLAW_FRV_LANE_WAIVER="<target version> <reason>"`, cleared after the release) keeps
+non-proof lane failures advisory; install-smoke, upgrade-survivor, pack/qualify-npm,
+`resolve_target`, and artifact gates stay blocking, and publishing that manifest
+needs the same `lane_waiver` acknowledgement on the publish workflow.
 
 ### Extended-stable validation
 
